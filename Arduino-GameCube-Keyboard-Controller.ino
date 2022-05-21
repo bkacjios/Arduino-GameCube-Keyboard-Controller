@@ -6,7 +6,7 @@
 #include <Keyboard.h>
 #include <KeyboardLayout.h>
 
-#define DEBUG 0
+//#define DEBUG
 
 #define NUM_PORTS 2
 #define NUM_BUTTONS 8
@@ -16,27 +16,28 @@
 #define PORT_2 1
 
 // Our controller ports are wired to pin 4 and 7
-CGamecubeController gc_controllers[2] = {
-  CGamecubeController(4),
-  CGamecubeController(7)
+CGamecubeController* gc_controllers[2] = {
+  new CGamecubeController(4),
+  new CGamecubeController(7)
 };
 
 // What port we are currently going to poll from.
-byte PORT = PORT_1;
+volatile byte PORT = PORT_1;
 
 // The last known device of each port.
-int gc_device_ids[NUM_PORTS] = {NINTENDO_DEVICE_GC_NONE, NINTENDO_DEVICE_GC_NONE};
+volatile int gc_device_ids[NUM_PORTS] = {NINTENDO_DEVICE_GC_NONE, NINTENDO_DEVICE_GC_NONE};
 
 // Tracks if the USB keyboard is pressing a key or not.
-boolean gc_keyboard_pressed[GCKEY_MAX] = {};
+volatile boolean gc_keyboard_pressed[GCKEY_MAX] = {};
 
 // The previous reported keyboard state of a gamecube keyboard.
-byte gc_keyboard_last_press[3][NUM_PORTS] = {};
+volatile byte gc_keyboard_last_press[3][NUM_PORTS] = {};
 
 // Setup interfaces for USB joysticks for all our ports.
 // We start at device ID 0x03 since 0x01 and 0x02 are for the Keyboard/Mouse HID libraries.
-Joystick_ joysticks[NUM_PORTS] = {
- Joystick_(
+
+Joystick_* joysticks[NUM_PORTS] = {
+ new Joystick_(
   0x03, JOYSTICK_TYPE_GAMEPAD,
   NUM_BUTTONS, NUM_DPADS, // Button Count, Hat Switch Count
   true, true, true,       // X, Y, and L analog axis
@@ -44,7 +45,7 @@ Joystick_ joysticks[NUM_PORTS] = {
   false, false,           // No rudder or throttle
   false, false, false     // No accelerator, brake, or steering
   ),
- Joystick_(
+ new Joystick_(
   0x04, JOYSTICK_TYPE_GAMEPAD,
   NUM_BUTTONS, NUM_DPADS, // Button Count, Hat Switch Count
   true, true, true,       // X, Y, and L analog axis
@@ -58,6 +59,24 @@ void setup() {
 #ifdef DEBUG
   while (!Serial) Serial.begin(115200);
 #endif
+
+  Keyboard.begin(KeyboardLayout_en_US);
+
+  for (byte i=PORT_1; i<PORT2; i++) {
+    auto joystick = joysticks[i];
+
+    // Set all ranges to 0-255
+    joystick->setXAxisRange(0, 255);
+    joystick->setYAxisRange(0, 255);
+    joystick->setRxAxisRange(0, 255);
+    joystick->setRyAxisRange(0, 255);
+    joystick->setZAxisRange(0, 255);
+    joystick->setRzAxisRange(0, 255);
+  
+    // Initialize our joystick.
+    // false = disable automatic reporting.
+    joystick->begin(false);
+  }
 }
 
 // the loop function runs over and over again forever
@@ -71,15 +90,15 @@ void loop() {
 
 void poll(byte port) {
     // Get the controller object we want to poll
-  CGamecubeController controller = gc_controllers[port];
+  auto controller = gc_controllers[port];
 
   // Get the last known connected device for this port.
   int device = gc_device_ids[port];
 
   // If valid read..
-  if (controller.read()) {
+  if (controller->read()) {
     // Get controller information
-    auto status = controller.getStatus();
+    auto status = controller->getStatus();
 
     // If this port was marked as being unoccupied..
     if (device == NINTENDO_DEVICE_GC_NONE) {
@@ -89,25 +108,12 @@ void poll(byte port) {
       Serial.print(" connected : ");
       Serial.println(status.device, HEX);
 #endif
-
       // Mark the port with our device type..
       gc_device_ids[port] = status.device;
-
-      // Initialize the controller or keyboard..
-      switch (status.device) {
-        case NINTENDO_DEVICE_GC_WIRED:
-          controller_init(port);
-          break;
-        case NINTENDO_DEVICE_GC_KEYBOARD:
-          keyboard_init();
-          break;
-        default:
-          break;
-      }
     }
 
     // Get the report data
-    auto report = controller.getReport();
+    auto report = controller->getReport();
 
     // Report the controller or keyboard..
     switch (status.device) {
@@ -132,73 +138,36 @@ void poll(byte port) {
     Serial.println(device, HEX);
 #endif
 
-    // Preform the proper shutdown routine.
-    switch (device) {
-      case NINTENDO_DEVICE_GC_WIRED:
-        controller_shutdown(port);
-        break;
-      case NINTENDO_DEVICE_GC_KEYBOARD:
-        keyboard_shutdown();
-        break;
-      default:
-        break;
-    }
-
     // Mark this port as having no device.
     gc_device_ids[port] = NINTENDO_DEVICE_GC_NONE;
   }
 }
 
-void controller_init(byte port) {
-  // Get the joystick HID for this port.
-  Joystick_ joystick = joysticks[port];
-
-  // Initialize our joystick.
-  // false = disable automatic reporting.
-  joystick.begin(false);
-
-  // Set all ranges to 0-255
-  joystick.setXAxisRange(0, 255);
-  joystick.setYAxisRange(0, 255);
-  joystick.setRxAxisRange(0, 255);
-  joystick.setRyAxisRange(0, 255);
-  joystick.setZAxisRange(0, 255);
-  joystick.setRzAxisRange(0, 255);
-}
-
-void controller_shutdown(byte port) {
-  // Get the joystick HID for this port.
-  Joystick_ joystick = joysticks[port];
-  
-  // End our joystick.
-  joystick.end();
-}
-
 void controller_report(byte port, Gamecube_Report_t &gc_report) {
   // Get the joystick HID for this port.
-  Joystick_ joystick = joysticks[port];
+  auto joystick = joysticks[port];
 
   // Set all our buttons.
-  joystick.setButton(0, gc_report.a);
-  joystick.setButton(1, gc_report.b);
-  joystick.setButton(2, gc_report.x);
-  joystick.setButton(3, gc_report.y);
-  joystick.setButton(4, gc_report.z);
-  joystick.setButton(5, gc_report.l);
-  joystick.setButton(6, gc_report.r);
-  joystick.setButton(7, gc_report.start);
+  joystick->setButton(0, gc_report.a);
+  joystick->setButton(1, gc_report.b);
+  joystick->setButton(2, gc_report.x);
+  joystick->setButton(3, gc_report.y);
+  joystick->setButton(4, gc_report.z);
+  joystick->setButton(5, gc_report.l);
+  joystick->setButton(6, gc_report.r);
+  joystick->setButton(7, gc_report.start);
   
   // Set Main-Stick analog values.
-  joystick.setXAxis(gc_report.xAxis);
-  joystick.setYAxis(255 - gc_report.yAxis); // Y axis is inverted
+  joystick->setXAxis(gc_report.xAxis);
+  joystick->setYAxis(255 - gc_report.yAxis); // Y axis is inverted
 
   // Set C-Stick analog values.
-  joystick.setRxAxis(gc_report.cxAxis);
-  joystick.setRyAxis(255 - gc_report.cyAxis); // Y axis is inverted
+  joystick->setRxAxis(gc_report.cxAxis);
+  joystick->setRyAxis(255 - gc_report.cyAxis); // Y axis is inverted
 
   // Set L/R analog values.
-  joystick.setZAxis(gc_report.left);
-  joystick.setRzAxis(gc_report.right);
+  joystick->setZAxis(gc_report.left);
+  joystick->setRzAxis(gc_report.right);
 
   // Default our hat to released.
   int16_t angle = JOYSTICK_HATSWITCH_RELEASE;
@@ -223,26 +192,23 @@ void controller_report(byte port, Gamecube_Report_t &gc_report) {
   }
 
   // Set our hat angle
-  joystick.setHatSwitch(0, angle);
+  joystick->setHatSwitch(0, angle);
 
   // Send state to USB, since we disabled automatic reporting.
-  joystick.sendState();
-}
-
-void keyboard_init() {
-  Keyboard.begin(KeyboardLayout_en_US);
-}
-
-void keyboard_shutdown() {
-  Keyboard.end();
+  joystick->sendState();
 }
 
 bool is_pressed(Gamecube_Report_t &gc_report, byte key) {
   // Loop through the reported key presses..
-  for (byte i=0; i<3; i++) {
-    // Return true if the key is being pressed in the report.
-    if (gc_report.keyboard.keypress[i] == key) return true;
-  }
+
+  if (gc_report.keyboard.keypress[0] == key) return true;
+  if (gc_report.keyboard.keypress[1] == key) return true;
+  if (gc_report.keyboard.keypress[2] == key) return true;
+  
+//  for (byte i=0; i<3; i++) {
+//    // Return true if the key is being pressed in the report.
+//    if (gc_report.keyboard.keypress[i] == key) return true;
+//  }
   // Welp, nothing.
   return false;
 }
